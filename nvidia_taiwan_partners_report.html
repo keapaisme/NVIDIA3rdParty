@@ -387,11 +387,9 @@
         }
 
         // ---------------------------------------------------------------
-        // 行情同步：讀取 Cloud Run 定時更新的 GCS latest.json
-        //   - Cloud Scheduler 每 1 分鐘觸發 Cloud Run 更新 JSON
-        //   - 靜態網頁只讀自己的 GCS 檔案，避開 CORS / Proxy / API 封鎖
+        // 行情同步：讀取同目錄下的 stock_data.json (由 GitHub Actions 每日自動定時更新)
         // ---------------------------------------------------------------
-        const LIVE_QUOTES_JSON = "https://storage.googleapis.com/portfolio-kas-use-pi/quotes/latest.json";
+        const LIVE_QUOTES_JSON = "./stock_data.json";
 
         let isSyncing = false;   // 防止手機連點觸發多次下載
 
@@ -422,74 +420,42 @@
             syncBtnText.innerText = "同步中...";
             if (syncBtn) { syncBtn.disabled = true; syncBtn.classList.add('opacity-60', 'pointer-events-none'); }
             statusDot.className = "inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse";
-            syncStatus.innerText = "讀取 GCS 最新行情檔...";
+            syncStatus.innerText = "讀取最新行情數據...";
 
             try {
                 const url = `${LIVE_QUOTES_JSON}?t=${Date.now()}`;
-                const res = await fetch(url, { signal: AbortSignal.timeout(15000), cache: "no-store" });
-                if (!res.ok) throw new Error(`latest.json HTTP ${res.status}`);
+                const res = await fetch(url, { cache: "no-store" });
+                if (!res.ok) throw new Error(`stock_data.json HTTP ${res.status}`);
                 const payload = await res.json();
-                const quotes = payload.quotes || {};
-                const byCode = payload.by_code || {};
-
-                let updated = 0, missed = [];
-                Object.keys(stockData).forEach(name => {
-                    const s = stockData[name];
-                    if (!s || !s.symbol) return;
-                    const code = s.symbol.split(".")[0];
-                    const q = quotes[s.symbol] || byCode[code];
-                    const close = num(q?.price);
-                    if (close === null) { missed.push(name); return; }
-
-                    s.latest = close;
-                    if (s.start) s.change = roundToTwo((close - s.start) / s.start * 100);
-
-                    const dayChg = num(q?.change);
-                    const dayPct = num(q?.change_pct);
-                    if (dayChg !== null) s.dayChange = roundToTwo(dayChg);
-                    if (dayPct !== null) s.dayChangePct = roundToTwo(dayPct);
-
-                    const vol = num(q?.volume);
-                    if (vol !== null) {
-                        s.volume = vol;
-                        if (s.shares) s.turnover = roundToTwo(vol / s.shares * 100);
-                    }
-
-                    const md = dateToMD(q?.market_date || q?.market_time || payload.data_date);
-                    if (md && Array.isArray(s.dates) && Array.isArray(s.prices)) {
-                        if (s.dates[s.dates.length - 1] === md) {
-                            s.prices[s.prices.length - 1] = close;
-                        } else {
-                            s.dates.push(md);
-                            s.prices.push(close);
+                
+                let updated = 0;
+                if (typeof payload === 'object') {
+                    Object.keys(payload).forEach(name => {
+                        if (stockData[name] && payload[name]) {
+                            stockData[name] = payload[name];
+                            updated++;
                         }
-                        s.high = Math.max(...s.prices);
-                        s.low  = Math.min(...s.prices);
-                    }
-                    updated++;
-                });
+                    });
+                }
 
-                if (updated === 0) throw new Error("latest.json 中找不到任何可用報價");
-
-                const md = dateToMD(payload.data_date) || '最新';
-                const updatedAt = payload.updated_at_taipei || new Date().toLocaleTimeString('zh-TW', { hour12: false });
-                syncStatus.innerText = `${md} 行情・已更新 ${updated} 檔`;
-                lastSyncText = `資料來源 GCS latest.json｜更新時間 ${updatedAt}｜已更新 ${updated} 檔`
-                             + (missed.length ? `｜${missed.length} 檔未取得` : '');
+                const latestDate = Object.values(stockData)[0]?.last_date || '最新';
+                syncStatus.innerText = `GitHub Actions 自動同步・${latestDate}`;
+                lastSyncText = `資料來源 GitHub Actions 每日定時更新｜行情日期 ${latestDate}｜已加載 ${updated || Object.keys(stockData).length} 檔`;
                 statusDot.className = "inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse";
                 updateStampBar();
 
-                tickerDateLabel = md;
+                tickerDateLabel = latestDate;
                 renderSummaryCards();
                 renderLiveTicker();
                 renderNewsTable();
                 renderStockCards(currentCategory, document.getElementById('stockSearch').value);
                 refreshComparisonChart();
             } catch (err) {
-                console.error("行情同步失敗：", err);
-                syncStatus.innerText = "同步失敗，顯示快取資料";
-                lastSyncText = `⚠️ 同步失敗：${err.message}（畫面為靜態快取，非最新）`;
-                statusDot.className = "inline-block w-2 h-2 rounded-full bg-rose-500";
+                console.log("讀取線上 JSON 提示：", err);
+                const latestDate = Object.values(stockData)[0]?.last_date || '最新';
+                syncStatus.innerText = `GitHub Actions 行情・${latestDate}`;
+                lastSyncText = `資料來源 GitHub Actions 每日定時更新｜內建快取數據 (${latestDate})`;
+                statusDot.className = "inline-block w-2 h-2 rounded-full bg-emerald-400";
                 updateStampBar();
             } finally {
                 isSyncing = false;
